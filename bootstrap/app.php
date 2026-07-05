@@ -35,6 +35,14 @@ return Application::configure(basePath: dirname(__DIR__))
         // Global fallback throttle for every /api/* route. Routes below
         // still layer stricter, endpoint-specific limits on top.
         $middleware->throttleApi();
+
+        // This is an API-only app: there is no "login" web route to redirect
+        // guests to. Without this, an unauthenticated/expired-token request
+        // to any api/* route throws RouteNotFoundException("Route [login]
+        // not defined") instead of a clean 401 JSON response.
+        $middleware->redirectGuestsTo(
+            fn (Request $request) => $request->is('api/*') ? null : '/login',
+        );
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(
