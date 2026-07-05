@@ -5,6 +5,7 @@ namespace App\Http\Middleware;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Auth;
 use Laravel\Sanctum\PersonalAccessToken;
 
 /**
@@ -46,6 +47,12 @@ class AuthenticateWithToken
 
         $user->withAccessToken($pat);
         $request->setUserResolver(fn () => $user);
+
+        // Log the user into the guard as well, so Auth::user() and the
+        // authorization Gate (used by every $this->authorize() call in the
+        // controllers) resolve to this user. Without this, setUserResolver
+        // only satisfies $request->user() and all policy checks deny with 403.
+        Auth::setUser($user);
 
         return $next($request);
     }
