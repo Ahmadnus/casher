@@ -78,7 +78,7 @@ class AuthenticateWithToken
             return trim(substr($auth, 7));
         }
 
-        if ($v = $request->query('api_token')) {
+        if (app()->environment('local', 'testing') && $v = $request->query('api_token')) {
             return trim((string) $v);
         }
 
