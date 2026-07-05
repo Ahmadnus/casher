@@ -41,7 +41,7 @@ Route::prefix('auth')->group(function () {
         ->middleware('throttle:5,1')
         ->name('auth.reset-password');
 
-    Route::middleware(['auth:sanctum', 'active'])->group(function () {
+    Route::middleware(['auth.token', 'active'])->group(function () {
         Route::post('logout', [AuthController::class, 'logout'])->name('auth.logout');
         Route::post('logout-all', [AuthController::class, 'logoutAllDevices'])->name('auth.logout-all');
         Route::get('me', [AuthController::class, 'me'])->name('auth.me');
@@ -58,7 +58,7 @@ Route::prefix('auth')->group(function () {
 |--------------------------------------------------------------------------
 */
 
-Route::middleware(['auth:sanctum', 'active'])->group(function () {
+Route::middleware(['auth.token', 'active'])->group(function () {
     // ── Employees ──────────────────────────────────────────────
     Route::get('employees/roles', [EmployeeController::class, 'roles']);
     Route::patch('employees/{employee}/toggle-active', [EmployeeController::class, 'toggleActive']);
