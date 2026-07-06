@@ -9,32 +9,130 @@ use Illuminate\Support\Collection;
 
 class ReportService
 {
-    public function dailySales(?string $date = null): array
+    /**
+     * Restrict a report query to one order type (e.g. "delivery"),
+     * ignoring null/empty so existing callers are unaffected.
+     */
+    protected function applyOrderType($query, ?string $orderType)
     {
-        $date = $date ? Carbon::parse($date) : today();
+        if (! empty($orderType)) {
+            $query->where('order_type', $orderType);
+        }
 
-        $query = Invoice::query()->where('status', 'paid')->whereDate('created_at', $date);
+        return $query;
+    }
+
+    /**
+     * Per-order-type totals for the same invoice set, keyed by type:
+     * ['delivery' => ['total_sales' => …, 'invoice_count' => …], …].
+     * Feeds the "delivery sales / pickup orders" cards in the app.
+     */
+    protected function breakdownByOrderType($query): array
+    {
+        return (clone $query)
+            ->selectRaw('order_type')
+            ->selectRaw('COALESCE(SUM(total), 0) as total_sales')
+            ->selectRaw('COALESCE(SUM(delivery_fee), 0) as delivery_fee')
+            ->selectRaw('COUNT(*) as invoice_count')
+            ->groupBy('order_type')
+            ->get()
+            ->mapWithKeys(fn ($row) => [$row->order_type => [
+                'total_sales' => (float) $row->total_sales,
+                'delivery_fee' => (float) $row->delivery_fee,
+                'invoice_count' => (int) $row->invoice_count,
+            ]])
+            ->all();
+    }
+
+    /**
+     * Total quantity of items sold across the given invoice set.
+     */
+    protected function itemsSold($query): int
+    {
+        // whereIn subquery instead of a join: the base query filters on
+        // created_at/status, which also exist on invoice_items and would
+        // make a joined query fail with an ambiguous-column SQL error.
+        return (int) DB::table('invoice_items')
+            ->whereIn('invoice_id', (clone $query)->select('invoices.id'))
+            ->sum('quantity');
+    }
+
+    /**
+     * Single-pass aggregate: one SQL query instead of seven clones,
+     * plus the per-order-type breakdown and total items sold.
+     */
+    protected function summarize($query): array
+    {
+        $byOrderType = $this->breakdownByOrderType($query);
+        $totalItems = $this->itemsSold($query);
+
+        $row = (clone $query)
+            ->selectRaw('COALESCE(SUM(total), 0) as total_sales')
+            ->selectRaw('COUNT(*) as invoice_count')
+            ->selectRaw('COALESCE(SUM(subtotal), 0) as subtotal')
+            ->selectRaw('COALESCE(SUM(tax), 0) as tax')
+            ->selectRaw('COALESCE(SUM(discount), 0) as discount')
+            ->selectRaw('COALESCE(SUM(delivery_fee), 0) as delivery_fee')
+            ->selectRaw('COALESCE(AVG(total), 0) as average_invoice')
+            ->first();
 
         return [
-            'date' => $date->toDateString(),
-            'total_sales' => (float) (clone $query)->sum('total'),
-            'invoice_count' => (clone $query)->count(),
-            'subtotal' => (float) (clone $query)->sum('subtotal'),
-            'tax' => (float) (clone $query)->sum('tax'),
-            'discount' => (float) (clone $query)->sum('discount'),
-            'delivery_fee' => (float) (clone $query)->sum('delivery_fee'),
-            'average_invoice' => (float) (clone $query)->avg('total'),
+            'total_sales' => (float) $row->total_sales,
+            'invoice_count' => (int) $row->invoice_count,
+            'subtotal' => (float) $row->subtotal,
+            'tax' => (float) $row->tax,
+            'discount' => (float) $row->discount,
+            'delivery_fee' => (float) $row->delivery_fee,
+            'average_invoice' => (float) $row->average_invoice,
+            'total_items' => $totalItems,
+            'by_order_type' => $byOrderType,
         ];
     }
 
-    public function weeklySales(?string $startDate = null): array
+    public function dailySales(?string $date = null, ?string $orderType = null): array
+    {
+        $date = $date ? Carbon::parse($date) : today();
+
+        $query = $this->applyOrderType(
+            Invoice::query()->where('status', 'paid')->whereDate('created_at', $date),
+            $orderType,
+        );
+
+        return ['date' => $date->toDateString()] + $this->summarize($query);
+    }
+
+    /**
+     * Summary for an arbitrary inclusive date range (custom report filter).
+     */
+    public function rangeSales(?string $from = null, ?string $to = null, ?string $orderType = null): array
+    {
+        $from = $from ? Carbon::parse($from) : today();
+        $to = $to ? Carbon::parse($to) : today();
+
+        $query = $this->applyOrderType(
+            Invoice::query()
+                ->where('status', 'paid')
+                ->whereDate('created_at', '>=', $from)
+                ->whereDate('created_at', '<=', $to),
+            $orderType,
+        );
+
+        return [
+            'date_from' => $from->toDateString(),
+            'date_to' => $to->toDateString(),
+        ] + $this->summarize($query);
+    }
+
+    public function weeklySales(?string $startDate = null, ?string $orderType = null): array
     {
         $start = $startDate ? Carbon::parse($startDate)->startOfWeek() : now()->startOfWeek();
         $end = (clone $start)->endOfWeek();
 
-        $byDay = Invoice::query()
+        $base = $this->applyOrderType(Invoice::query(), $orderType)
             ->where('status', 'paid')
-            ->whereBetween('created_at', [$start, $end])
+            ->whereBetween('created_at', [$start, $end]);
+
+        $byDay = (clone $base)
             ->selectRaw('DATE(created_at) as date')
             ->selectRaw('SUM(total) as total_sales')
             ->selectRaw('COUNT(*) as invoice_count')
@@ -45,21 +143,21 @@ class ReportService
         return [
             'start_date' => $start->toDateString(),
             'end_date' => $end->toDateString(),
-            'total_sales' => (float) $byDay->sum('total_sales'),
-            'invoice_count' => (int) $byDay->sum('invoice_count'),
             'by_day' => $byDay,
-        ];
+        ] + $this->summarize($base);
     }
 
-    public function monthlySales(?int $year = null, ?int $month = null): array
+    public function monthlySales(?int $year = null, ?int $month = null, ?string $orderType = null): array
     {
         $year ??= now()->year;
         $month ??= now()->month;
 
-        $byDay = Invoice::query()
+        $base = $this->applyOrderType(Invoice::query(), $orderType)
             ->where('status', 'paid')
             ->whereYear('created_at', $year)
-            ->whereMonth('created_at', $month)
+            ->whereMonth('created_at', $month);
+
+        $byDay = (clone $base)
             ->selectRaw('DATE(created_at) as date')
             ->selectRaw('SUM(total) as total_sales')
             ->selectRaw('COUNT(*) as invoice_count')
@@ -70,10 +168,8 @@ class ReportService
         return [
             'year' => $year,
             'month' => $month,
-            'total_sales' => (float) $byDay->sum('total_sales'),
-            'invoice_count' => (int) $byDay->sum('invoice_count'),
             'by_day' => $byDay,
-        ];
+        ] + $this->summarize($base);
     }
 
     public function bestSellingItems(?string $from = null, ?string $to = null, int $limit = 20): Collection

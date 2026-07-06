@@ -102,6 +102,10 @@ class InvoiceService
 
             $total = max(0, $subtotal + $tax + $deliveryFee - $discount);
 
+            // POS checkout collects payment at issuance, so invoices are
+            // paid by default; pass "paid": false to issue an open invoice.
+            $isPaid = (bool) ($data['paid'] ?? true);
+
             $invoice = Invoice::create([
                 'invoice_number' => $this->generateInvoiceNumber(),
                 'order_id' => $order?->id,
@@ -120,7 +124,8 @@ class InvoiceService
                 'delivery_fee' => $deliveryFee,
                 'total' => $total,
                 'payment_method' => $data['payment_method'],
-                'status' => 'unpaid',
+                'status' => $isPaid ? 'paid' : 'unpaid',
+                'paid_at' => $isPaid ? now() : null,
             ]);
 
             foreach ($lineItems as $line) {

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -15,6 +16,9 @@ use Illuminate\Database\Eloquent\Model;
  */
 class InvoiceItem extends Model
 {
+    /** @use HasFactory<\Database\Factories\InvoiceItemFactory> */
+    use HasFactory;
+
     protected $fillable = ['invoice_id', 'menu_item_id', 'name', 'price', 'quantity', 'total'];
 
     protected function casts(): array

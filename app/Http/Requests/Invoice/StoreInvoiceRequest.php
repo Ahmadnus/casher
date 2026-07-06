@@ -31,6 +31,7 @@ class StoreInvoiceRequest extends FormRequest
 
             'order_type' => ['required', Rule::in(Invoice::ORDER_TYPES)],
             'payment_method' => ['required', Rule::in(['cash', 'card', 'online'])],
+            'paid' => ['sometimes', 'boolean'],
 
             'discount' => ['sometimes', 'numeric', 'min:0'],
             'tax' => ['sometimes', 'numeric', 'min:0'],

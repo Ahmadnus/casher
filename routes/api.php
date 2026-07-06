@@ -114,6 +114,7 @@ Route::middleware(['auth.token', 'active'])->group(function () {
     // ── Reports ────────────────────────────────────────────────
     Route::prefix('reports')->group(function () {
         Route::get('daily', [ReportController::class, 'daily']);
+        Route::get('range', [ReportController::class, 'range']);
         Route::get('weekly', [ReportController::class, 'weekly']);
         Route::get('monthly', [ReportController::class, 'monthly']);
         Route::get('best-selling-items', [ReportController::class, 'bestSellingItems']);

@@ -15,14 +15,31 @@ class ReportController extends Controller
     {
         $this->authorize('viewAny', \App\Models\Invoice::class);
 
-        return $this->success($this->reportService->dailySales($request->string('date')->value() ?: null));
+        return $this->success($this->reportService->dailySales(
+            $request->string('date')->value() ?: null,
+            $request->string('order_type')->value() ?: null,
+        ));
+    }
+
+    public function range(Request $request): JsonResponse
+    {
+        $this->authorize('viewAny', \App\Models\Invoice::class);
+
+        return $this->success($this->reportService->rangeSales(
+            $request->string('date_from')->value() ?: null,
+            $request->string('date_to')->value() ?: null,
+            $request->string('order_type')->value() ?: null,
+        ));
     }
 
     public function weekly(Request $request): JsonResponse
     {
         $this->authorize('viewAny', \App\Models\Invoice::class);
 
-        return $this->success($this->reportService->weeklySales($request->string('start_date')->value() ?: null));
+        return $this->success($this->reportService->weeklySales(
+            $request->string('start_date')->value() ?: null,
+            $request->string('order_type')->value() ?: null,
+        ));
     }
 
     public function monthly(Request $request): JsonResponse
@@ -32,6 +49,7 @@ class ReportController extends Controller
         return $this->success($this->reportService->monthlySales(
             $request->integer('year') ?: null,
             $request->integer('month') ?: null,
+            $request->string('order_type')->value() ?: null,
         ));
     }
 
