@@ -102,9 +102,11 @@ class InvoiceService
 
             $total = max(0, $subtotal + $tax + $deliveryFee - $discount);
 
-            // POS checkout collects payment at issuance, so invoices are
-            // paid by default; pass "paid": false to issue an open invoice.
-            $isPaid = (bool) ($data['paid'] ?? true);
+            // Order lifecycle: a newly submitted order is an UNPAID pending
+            // invoice by default; it becomes a finalized paid invoice only
+            // when the cashier confirms payment (mark-paid endpoint).
+            // Pass "paid": true to collect payment at issuance instead.
+            $isPaid = (bool) ($data['paid'] ?? false);
 
             $invoice = Invoice::create([
                 'invoice_number' => $this->generateInvoiceNumber(),
