@@ -38,7 +38,7 @@ class Invoice extends Model
     public const ORDER_TYPES = ['dine_in', 'takeaway', 'delivery', 'coffee_shop'];
 
     protected $fillable = [
-        'invoice_number', 'order_id', 'customer_id', 'employee_id', 'delivery_area_id',
+        'invoice_number', 'idempotency_key', 'order_id', 'customer_id', 'employee_id', 'delivery_area_id',
         'customer_name', 'customer_phone', 'delivery_address', 'notes', 'order_type', 'table_number',
         'subtotal', 'tax', 'discount', 'delivery_fee', 'total',
         'payment_method', 'status', 'paid_at',

@@ -52,7 +52,10 @@ class MenuItem extends Model implements HasMedia
         $original = $slug;
         $i = 1;
 
-        while (static::where('slug', $slug)->exists()) {
+        // withTrashed(): a soft-deleted item still holds its unique slug,
+        // so re-creating an item with the same name must skip past it to
+        // avoid a unique-key 500 on insert.
+        while (static::withTrashed()->where('slug', $slug)->exists()) {
             $slug = "{$original}-{$i}";
             $i++;
         }

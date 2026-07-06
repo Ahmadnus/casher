@@ -6,6 +6,7 @@ use App\Models\Category;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Validation\ValidationException;
 
 class CategoryService
 {
@@ -54,8 +55,23 @@ class CategoryService
         return $category->fresh();
     }
 
+    /**
+     * @throws ValidationException
+     */
     public function delete(Category $category): void
     {
+        // category_id on menu_items is a non-nullable FK, so a category's
+        // items cannot be "un-categorized". Block the delete while items
+        // still reference it — the admin must move or remove them first.
+        // This prevents orphaned products silently appearing in the POS.
+        $itemCount = $category->menuItems()->count();
+
+        if ($itemCount > 0) {
+            throw ValidationException::withMessages([
+                'category' => ["لا يمكن حذف الفئة لوجود {$itemCount} صنف مرتبط بها. انقل أو احذف الأصناف أولاً."],
+            ]);
+        }
+
         $category->delete();
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Customer;
 use App\Models\Invoice;
 use App\Models\MenuItem;
 use App\Models\Order;
@@ -47,7 +48,38 @@ class InvoiceService
      */
     public function create(array $data, User $employee): Invoice
     {
-        return DB::transaction(function () use ($data, $employee) {
+        // Idempotency: if this checkout attempt was already turned into an
+        // invoice (double-tap / retry after timeout), return that invoice
+        // instead of creating a duplicate.
+        $idempotencyKey = $data['idempotency_key'] ?? null;
+        if ($idempotencyKey) {
+            $existing = Invoice::where('idempotency_key', $idempotencyKey)->first();
+            if ($existing) {
+                return $existing->load(['items', 'customer', 'employee', 'deliveryArea']);
+            }
+        }
+
+        try {
+            return $this->createInvoice($data, $employee, $idempotencyKey);
+        } catch (\Illuminate\Database\QueryException $e) {
+            // Concurrent request with the same key won the unique-index
+            // race — return the invoice it created rather than erroring.
+            if ($idempotencyKey) {
+                $existing = Invoice::where('idempotency_key', $idempotencyKey)->first();
+                if ($existing) {
+                    return $existing->load(['items', 'customer', 'employee', 'deliveryArea']);
+                }
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * @throws ValidationException
+     */
+    protected function createInvoice(array $data, User $employee, ?string $idempotencyKey): Invoice
+    {
+        return DB::transaction(function () use ($data, $employee, $idempotencyKey) {
             $order = null;
             $lineItems = collect();
 
@@ -110,8 +142,9 @@ class InvoiceService
 
             $invoice = Invoice::create([
                 'invoice_number' => $this->generateInvoiceNumber(),
+                'idempotency_key' => $idempotencyKey,
                 'order_id' => $order?->id,
-                'customer_id' => $data['customer_id'] ?? null,
+                'customer_id' => $this->resolveCustomerId($data),
                 'employee_id' => $employee->id,
                 'delivery_area_id' => $data['delivery_area_id'] ?? null,
                 'customer_name' => $data['customer_name'] ?? null,
@@ -136,6 +169,47 @@ class InvoiceService
 
             return $invoice->load(['items', 'customer', 'employee', 'deliveryArea']);
         });
+    }
+
+    /**
+     * Find-or-create the customer this invoice belongs to, so every order
+     * carrying a phone number persists and links a Customer record — that
+     * is what powers repeat-customer lookup and total_spent. An explicit
+     * customer_id always wins; otherwise we match on phone.
+     *
+     * withTrashed(): the phone column is uniquely indexed and the model
+     * soft-deletes, so a previously-removed customer must be restored and
+     * reused rather than collide with the unique key.
+     */
+    protected function resolveCustomerId(array $data): ?int
+    {
+        if (! empty($data['customer_id'])) {
+            return (int) $data['customer_id'];
+        }
+
+        $phone = trim((string) ($data['customer_phone'] ?? ''));
+        if ($phone === '') {
+            return null;
+        }
+
+        $customer = Customer::withTrashed()->firstOrNew(['phone' => $phone]);
+
+        if ($customer->trashed()) {
+            $customer->restore();
+        }
+
+        // Keep the record current with the latest checkout details so a
+        // repeat lookup autofills the most recent name/address/area.
+        $customer->name = $data['customer_name'] ?? ($customer->name ?: 'عميل');
+        if (! empty($data['delivery_area_id'])) {
+            $customer->delivery_area_id = $data['delivery_area_id'];
+        }
+        if (! empty($data['delivery_address'])) {
+            $customer->delivery_address = $data['delivery_address'];
+        }
+        $customer->save();
+
+        return $customer->id;
     }
 
     public function markPaid(Invoice $invoice, ?string $paymentMethod = null): Invoice

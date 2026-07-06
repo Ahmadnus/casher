@@ -3,6 +3,7 @@
 namespace App\Http\Requests\Customer;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class StoreCustomerRequest extends FormRequest
 {
@@ -15,7 +16,10 @@ class StoreCustomerRequest extends FormRequest
     {
         return [
             'name' => ['required', 'string', 'max:255'],
-            'phone' => ['required', 'string', 'max:30', 'unique:customers,phone'],
+            // Ignore soft-deleted customers so a deleted customer's phone
+            // can be reused — matches findByPhone, which respects the
+            // soft-delete scope and would otherwise never find the old row.
+            'phone' => ['required', 'string', 'max:30', Rule::unique('customers', 'phone')->whereNull('deleted_at')],
             'email' => ['nullable', 'email', 'max:255'],
             'address' => ['nullable', 'string'],
             'delivery_address' => ['nullable', 'string'],

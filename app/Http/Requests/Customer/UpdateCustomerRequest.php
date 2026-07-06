@@ -18,7 +18,7 @@ class UpdateCustomerRequest extends FormRequest
 
         return [
             'name' => ['sometimes', 'required', 'string', 'max:255'],
-            'phone' => ['sometimes', 'required', 'string', 'max:30', Rule::unique('customers', 'phone')->ignore($customerId)],
+            'phone' => ['sometimes', 'required', 'string', 'max:30', Rule::unique('customers', 'phone')->ignore($customerId)->whereNull('deleted_at')],
             'email' => ['nullable', 'email', 'max:255'],
             'address' => ['nullable', 'string'],
             'delivery_address' => ['nullable', 'string'],

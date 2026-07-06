@@ -46,7 +46,10 @@ class Category extends Model implements HasMedia
         $original = $slug;
         $i = 1;
 
-        while (static::where('slug', $slug)->exists()) {
+        // withTrashed(): a soft-deleted row still occupies the unique
+        // slug in the DB, so re-creating a category with the same name
+        // must skip past it — otherwise the insert hits a unique-key 500.
+        while (static::withTrashed()->where('slug', $slug)->exists()) {
             $slug = "{$original}-{$i}";
             $i++;
         }
