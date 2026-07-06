@@ -140,6 +140,16 @@ class InvoiceService
 
     public function markPaid(Invoice $invoice, ?string $paymentMethod = null): Invoice
     {
+        // State-machine guard: only an unpaid invoice can be paid. This
+        // makes a double-tap on "تأكيد الدفع" idempotent (the 2nd request
+        // is rejected instead of re-stamping paid_at) and blocks reviving
+        // a refunded/cancelled invoice back into the sales figures.
+        if ($invoice->status !== 'unpaid') {
+            throw ValidationException::withMessages([
+                'status' => ['لا يمكن تأكيد دفع فاتورة حالتها الحالية: '.$invoice->status],
+            ]);
+        }
+
         $invoice->update(array_filter([
             'status' => 'paid',
             'paid_at' => now(),
@@ -151,6 +161,13 @@ class InvoiceService
 
     public function refund(Invoice $invoice): Invoice
     {
+        // Only a paid invoice represents money that can be given back.
+        if ($invoice->status !== 'paid') {
+            throw ValidationException::withMessages([
+                'status' => ['لا يمكن استرجاع فاتورة غير مدفوعة'],
+            ]);
+        }
+
         $invoice->update(['status' => 'refunded']);
 
         return $invoice->fresh(['items', 'customer', 'employee', 'deliveryArea']);
@@ -158,6 +175,14 @@ class InvoiceService
 
     public function cancel(Invoice $invoice): Invoice
     {
+        // A paid invoice must be refunded, not silently cancelled, so
+        // collected money is never dropped from the books.
+        if (! in_array($invoice->status, ['unpaid'], true)) {
+            throw ValidationException::withMessages([
+                'status' => ['لا يمكن إلغاء فاتورة حالتها: '.$invoice->status],
+            ]);
+        }
+
         $invoice->update(['status' => 'cancelled']);
 
         return $invoice->fresh(['items', 'customer', 'employee', 'deliveryArea']);

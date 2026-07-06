@@ -62,7 +62,11 @@ class RolePermissionSeeder extends Seeder
             'menu-items.view',
             'delivery-areas.view',
             'orders.view', 'orders.create', 'orders.update-status',
-            'invoices.view', 'invoices.create', 'invoices.print',
+            // invoices.update is what MarkInvoicePaidRequest authorizes on:
+            // the cashier is the role that collects payment on pending
+            // orders, so it must be able to mark invoices paid/refund.
+            'invoices.view', 'invoices.create', 'invoices.update',
+            'invoices.refund', 'invoices.print',
             'dashboard.view',
             'printer-settings.view', 'printer-settings.update',
         ]);
