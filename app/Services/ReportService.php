@@ -172,6 +172,50 @@ class ReportService
         ] + $this->summarize($base);
     }
 
+    /**
+     * Full itemized breakdown of every product sold in a date range
+     * (defaults to today) — for end-of-day inventory reconciliation.
+     * Unlike bestSellingItems there is no limit, and it can be
+     * restricted to one order type. Returns both a detailed list and
+     * a simple {"Burger": 20} map keyed by item name.
+     */
+    public function itemizedSales(?string $from = null, ?string $to = null, ?string $orderType = null): array
+    {
+        $from = $from ? Carbon::parse($from) : today();
+        $to = $to ? Carbon::parse($to) : $from;
+
+        $rows = DB::table('invoice_items')
+            ->join('invoices', 'invoices.id', '=', 'invoice_items.invoice_id')
+            ->where('invoices.status', 'paid')
+            ->whereNull('invoices.deleted_at')
+            ->whereDate('invoices.created_at', '>=', $from)
+            ->whereDate('invoices.created_at', '<=', $to)
+            ->when(! empty($orderType), fn ($q) => $q->where('invoices.order_type', $orderType))
+            // Group by the item snapshot name: invoice_items stores the name
+            // at sale time, so renamed/deleted menu items still report
+            // correctly for the day they were sold.
+            ->select('invoice_items.name')
+            ->selectRaw('SUM(invoice_items.quantity) as total_quantity')
+            ->selectRaw('SUM(invoice_items.total) as total_revenue')
+            ->groupBy('invoice_items.name')
+            ->orderByDesc('total_quantity')
+            ->get();
+
+        return [
+            'date_from' => $from->toDateString(),
+            'date_to' => $to->toDateString(),
+            'total_items' => (int) $rows->sum('total_quantity'),
+            'items' => $rows->map(fn ($r) => [
+                'name' => $r->name,
+                'total_quantity' => (int) $r->total_quantity,
+                'total_revenue' => (float) $r->total_revenue,
+            ])->values()->all(),
+            'items_map' => $rows->mapWithKeys(
+                fn ($r) => [$r->name => (int) $r->total_quantity]
+            )->all(),
+        ];
+    }
+
     public function bestSellingItems(?string $from = null, ?string $to = null, int $limit = 20): Collection
     {
         $query = DB::table('invoice_items')

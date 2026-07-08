@@ -53,6 +53,17 @@ class ReportController extends Controller
         ));
     }
 
+    public function itemized(Request $request): JsonResponse
+    {
+        $this->authorize('viewAny', \App\Models\Invoice::class);
+
+        return $this->success($this->reportService->itemizedSales(
+            $request->string('date_from')->value() ?: null,
+            $request->string('date_to')->value() ?: null,
+            $request->string('order_type')->value() ?: null,
+        ));
+    }
+
     public function bestSellingItems(Request $request): JsonResponse
     {
         $this->authorize('viewAny', \App\Models\Invoice::class);

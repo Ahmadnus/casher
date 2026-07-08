@@ -117,6 +117,7 @@ Route::middleware(['auth.token', 'active'])->group(function () {
         Route::get('range', [ReportController::class, 'range']);
         Route::get('weekly', [ReportController::class, 'weekly']);
         Route::get('monthly', [ReportController::class, 'monthly']);
+        Route::get('itemized', [ReportController::class, 'itemized']);
         Route::get('best-selling-items', [ReportController::class, 'bestSellingItems']);
         Route::get('sales-by-employee', [ReportController::class, 'salesByEmployee']);
         Route::get('sales-by-delivery-area', [ReportController::class, 'salesByDeliveryArea']);
