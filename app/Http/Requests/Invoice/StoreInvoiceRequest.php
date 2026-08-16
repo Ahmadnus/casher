@@ -27,6 +27,17 @@ class StoreInvoiceRequest extends FormRequest
             'delivery_area_id' => ['nullable', 'required_if:order_type,delivery', 'exists:delivery_areas,id'],
             'delivery_address' => ['nullable', 'required_if:order_type,delivery', 'string'],
             'table_number' => ['nullable', 'required_if:order_type,dine_in', 'string', 'max:20'],
+
+            // Platform order id — required on third-party channels unless the
+            // invoice is built from an order that already carries one.
+            'external_reference' => [
+                'nullable',
+                Rule::requiredIf(fn () => ! $this->filled('order_id') && in_array(
+                    $this->input('order_type'), \App\Models\Channel::THIRD_PARTY_CODES, true,
+                )),
+                'string', 'max:60',
+            ],
+
             'notes' => ['nullable', 'string'],
 
             'order_type' => ['required', Rule::in(Invoice::ORDER_TYPES)],

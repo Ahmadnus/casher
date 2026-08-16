@@ -35,12 +35,15 @@ class Invoice extends Model
 
     public const STATUSES = ['unpaid', 'paid', 'refunded', 'cancelled'];
 
-    public const ORDER_TYPES = ['dine_in', 'takeaway', 'delivery', 'coffee_shop'];
+    /** Mirrors Channel::CODES and the invoices.order_type DB enum. */
+    public const ORDER_TYPES = Channel::CODES;
 
     protected $fillable = [
         'invoice_number', 'idempotency_key', 'order_id', 'customer_id', 'employee_id', 'delivery_area_id',
-        'customer_name', 'customer_phone', 'delivery_address', 'notes', 'order_type', 'table_number',
+        'channel_id', 'customer_name', 'customer_phone', 'delivery_address', 'notes', 'order_type',
+        'table_number', 'external_reference',
         'subtotal', 'tax', 'discount', 'delivery_fee', 'total',
+        'commission_rate', 'commission_amount', 'net_total',
         'payment_method', 'status', 'paid_at',
     ];
 
@@ -52,6 +55,9 @@ class Invoice extends Model
             'discount' => 'decimal:2',
             'delivery_fee' => 'decimal:2',
             'total' => 'decimal:2',
+            'commission_rate' => 'decimal:2',
+            'commission_amount' => 'decimal:2',
+            'net_total' => 'decimal:2',
             'paid_at' => 'datetime',
         ];
     }
@@ -76,6 +82,11 @@ class Invoice extends Model
         return $this->belongsTo(DeliveryArea::class);
     }
 
+    public function channel()
+    {
+        return $this->belongsTo(Channel::class);
+    }
+
     public function items()
     {
         return $this->hasMany(InvoiceItem::class);
@@ -94,6 +105,15 @@ class Invoice extends Model
     public function scopePaymentMethod($query, ?string $method)
     {
         return $method ? $query->where('payment_method', $method) : $query;
+    }
+
+    /**
+     * Filter by channel code ("talabaty"). Uses the denormalized order_type
+     * column so it hits the existing reporting indexes without a join.
+     */
+    public function scopeChannel($query, ?string $code)
+    {
+        return $code ? $query->where('order_type', $code) : $query;
     }
 
     public function scopeBetweenDates($query, ?string $from, ?string $to)

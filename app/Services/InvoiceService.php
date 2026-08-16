@@ -14,9 +14,11 @@ use Illuminate\Validation\ValidationException;
 
 class InvoiceService
 {
+    public function __construct(protected ChannelService $channels) {}
+
     public function paginate(array $filters = []): LengthAwarePaginator
     {
-        $query = Invoice::query()->with(['items', 'customer', 'employee', 'deliveryArea']);
+        $query = Invoice::query()->with(['items', 'customer', 'employee', 'deliveryArea', 'channel']);
 
         if (! empty($filters['search'])) {
             $query->search($filters['search']);
@@ -38,6 +40,10 @@ class InvoiceService
             $query->where('order_type', $filters['order_type']);
         }
 
+        // "channel" is the newer alias for the same column — both accepted so
+        // existing clients sending order_type keep working.
+        $query->channel($filters['channel'] ?? null);
+
         $query->orderBy($filters['sort_by'] ?? 'created_at', $filters['sort_dir'] ?? 'desc');
 
         return $query->paginate($filters['per_page'] ?? 20);
@@ -55,7 +61,7 @@ class InvoiceService
         if ($idempotencyKey) {
             $existing = Invoice::where('idempotency_key', $idempotencyKey)->first();
             if ($existing) {
-                return $existing->load(['items', 'customer', 'employee', 'deliveryArea']);
+                return $existing->load(['items', 'customer', 'employee', 'deliveryArea', 'channel']);
             }
         }
 
@@ -67,7 +73,7 @@ class InvoiceService
             if ($idempotencyKey) {
                 $existing = Invoice::where('idempotency_key', $idempotencyKey)->first();
                 if ($existing) {
-                    return $existing->load(['items', 'customer', 'employee', 'deliveryArea']);
+                    return $existing->load(['items', 'customer', 'employee', 'deliveryArea', 'channel']);
                 }
             }
             throw $e;
@@ -82,6 +88,9 @@ class InvoiceService
         return DB::transaction(function () use ($data, $employee, $idempotencyKey) {
             $order = null;
             $lineItems = collect();
+
+            $channel = $this->channels->resolveForWrite($data['order_type']);
+            $overrides = $this->channels->overridesFor($channel);
 
             if (! empty($data['order_id'])) {
                 $order = Order::with('items')->findOrFail($data['order_id']);
@@ -104,7 +113,7 @@ class InvoiceService
                     ->get()
                     ->keyBy('id');
 
-                $lineItems = collect($data['items'])->map(function ($line) use ($menuItems) {
+                $lineItems = collect($data['items'])->map(function ($line) use ($menuItems, $overrides) {
                     $item = $menuItems->get($line['menu_item_id']);
 
                     if (! $item) {
@@ -113,12 +122,16 @@ class InvoiceService
                         ]);
                     }
 
+                    // Channel price when the item is marked up for this
+                    // channel, base menu price otherwise.
+                    $price = $this->channels->priceFor($item, $overrides);
+
                     return [
                         'menu_item_id' => $item->id,
                         'name' => $item->name,
-                        'price' => $item->price,
+                        'price' => $price,
                         'quantity' => $line['quantity'],
-                        'total' => $item->price * $line['quantity'],
+                        'total' => $price * $line['quantity'],
                     ];
                 });
             }
@@ -134,6 +147,15 @@ class InvoiceService
 
             $total = max(0, $subtotal + $tax + $deliveryFee - $discount);
 
+            // Platform commission, snapshotted at issue time so that editing a
+            // channel's rate later never rewrites historical net revenue.
+            // Charged on goods only (subtotal - discount): aggregators take a
+            // cut of the food, not of tax or the delivery fee.
+            $commissionBase = max(0, $subtotal - $discount);
+            $commissionRate = (float) $channel->commission_rate;
+            $commissionAmount = $channel->commissionOn($commissionBase);
+            $netTotal = round($total - $commissionAmount, 2);
+
             // Order lifecycle: a newly submitted order is an UNPAID pending
             // invoice by default; it becomes a finalized paid invoice only
             // when the cashier confirms payment (mark-paid endpoint).
@@ -147,17 +169,22 @@ class InvoiceService
                 'customer_id' => $this->resolveCustomerId($data),
                 'employee_id' => $employee->id,
                 'delivery_area_id' => $data['delivery_area_id'] ?? null,
+                'channel_id' => $channel->id,
                 'customer_name' => $data['customer_name'] ?? null,
                 'customer_phone' => $data['customer_phone'] ?? null,
                 'delivery_address' => $data['delivery_address'] ?? null,
                 'table_number' => $data['table_number'] ?? null,
+                'external_reference' => $data['external_reference'] ?? $order?->external_reference,
                 'notes' => $data['notes'] ?? null,
-                'order_type' => $data['order_type'],
+                'order_type' => $channel->code,
                 'subtotal' => $subtotal,
                 'tax' => $tax,
                 'discount' => $discount,
                 'delivery_fee' => $deliveryFee,
                 'total' => $total,
+                'commission_rate' => $commissionRate,
+                'commission_amount' => $commissionAmount,
+                'net_total' => $netTotal,
                 'payment_method' => $data['payment_method'],
                 'status' => $isPaid ? 'paid' : 'unpaid',
                 'paid_at' => $isPaid ? now() : null,
@@ -167,7 +194,7 @@ class InvoiceService
                 $invoice->items()->create($line);
             }
 
-            return $invoice->load(['items', 'customer', 'employee', 'deliveryArea']);
+            return $invoice->load(['items', 'customer', 'employee', 'deliveryArea', 'channel']);
         });
     }
 
@@ -230,7 +257,7 @@ class InvoiceService
             'payment_method' => $paymentMethod,
         ]));
 
-        return $invoice->fresh(['items', 'customer', 'employee', 'deliveryArea']);
+        return $invoice->fresh(['items', 'customer', 'employee', 'deliveryArea', 'channel']);
     }
 
     public function refund(Invoice $invoice): Invoice
@@ -244,7 +271,7 @@ class InvoiceService
 
         $invoice->update(['status' => 'refunded']);
 
-        return $invoice->fresh(['items', 'customer', 'employee', 'deliveryArea']);
+        return $invoice->fresh(['items', 'customer', 'employee', 'deliveryArea', 'channel']);
     }
 
     public function cancel(Invoice $invoice): Invoice
@@ -259,7 +286,7 @@ class InvoiceService
 
         $invoice->update(['status' => 'cancelled']);
 
-        return $invoice->fresh(['items', 'customer', 'employee', 'deliveryArea']);
+        return $invoice->fresh(['items', 'customer', 'employee', 'deliveryArea', 'channel']);
     }
 
     public function delete(Invoice $invoice): void

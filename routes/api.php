@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\PrinterSettingController;
 use App\Http\Controllers\Api\ReportController;
+use App\Http\Controllers\Api\ChannelController;
 use App\Http\Controllers\Api\SettingsController;
 use Illuminate\Support\Facades\Route;
 
@@ -122,6 +123,24 @@ Route::middleware(['auth.token', 'active'])->group(function () {
         Route::get('sales-by-employee', [ReportController::class, 'salesByEmployee']);
         Route::get('sales-by-delivery-area', [ReportController::class, 'salesByDeliveryArea']);
         Route::get('sales-by-category', [ReportController::class, 'salesByCategory']);
+
+        // ── Multi-channel reporting ────────────────────────────
+        // Unified dashboard: every channel + overall totals in one call.
+        Route::get('sales-by-channel', [ReportController::class, 'salesByChannel']);
+        // Items sold, bucketed per channel.
+        Route::get('itemized-by-channel', [ReportController::class, 'itemizedByChannel']);
+        // Standalone per-channel report, e.g. reports/channel/talabaty.
+        Route::get('channel/{channel}', [ReportController::class, 'channelTrend']);
+    });
+
+    // ── Sales channels ─────────────────────────────────────────
+    Route::prefix('channels')->group(function () {
+        Route::get('/', [ChannelController::class, 'index']);
+        Route::patch('{channel}', [ChannelController::class, 'update']);
+        // Menu priced for one channel — the POS loads this on channel switch.
+        Route::get('{channel}/menu', [ChannelController::class, 'menu']);
+        Route::get('{channel}/prices', [ChannelController::class, 'prices']);
+        Route::post('{channel}/prices', [ChannelController::class, 'syncPrices']);
     });
 
     // ── Notifications ──────────────────────────────────────────

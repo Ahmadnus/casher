@@ -21,7 +21,8 @@ class Order extends Model
     /** @use HasFactory<\Database\Factories\OrderFactory> */
     use HasFactory, SoftDeletes;
 
-    public const TYPES = ['dine_in', 'takeaway', 'delivery', 'coffee_shop'];
+    /** Mirrors Channel::CODES and the orders.type DB enum. */
+    public const TYPES = Channel::CODES;
 
     public const STATUSES = ['pending', 'preparing', 'ready', 'delivered', 'cancelled'];
 
@@ -38,8 +39,8 @@ class Order extends Model
     ];
 
     protected $fillable = [
-        'order_number', 'customer_id', 'employee_id', 'delivery_area_id',
-        'type', 'status', 'table_number', 'notes',
+        'order_number', 'customer_id', 'employee_id', 'delivery_area_id', 'channel_id',
+        'type', 'status', 'table_number', 'external_reference', 'notes',
         'preparing_at', 'ready_at', 'delivered_at', 'cancelled_at',
     ];
 
@@ -66,6 +67,11 @@ class Order extends Model
     public function deliveryArea()
     {
         return $this->belongsTo(DeliveryArea::class);
+    }
+
+    public function channel()
+    {
+        return $this->belongsTo(Channel::class);
     }
 
     public function items()
@@ -96,6 +102,14 @@ class Order extends Model
     public function scopeType($query, ?string $type)
     {
         return $type ? $query->where('type', $type) : $query;
+    }
+
+    /**
+     * Filter by channel code ("talabaty") — the POS sends codes, not ids.
+     */
+    public function scopeChannel($query, ?string $code)
+    {
+        return $code ? $query->where('type', $code) : $query;
     }
 
     public function scopeActive($query)

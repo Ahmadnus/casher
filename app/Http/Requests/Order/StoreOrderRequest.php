@@ -19,6 +19,17 @@ class StoreOrderRequest extends FormRequest
             'delivery_area_id' => ['nullable', 'required_if:type,delivery', 'exists:delivery_areas,id'],
             'type' => ['required', Rule::in(\App\Models\Order::TYPES)],
             'table_number' => ['nullable', 'required_if:type,dine_in', 'string', 'max:20'],
+
+            // Aggregator's own order id. Required on third-party channels so
+            // staff can always reconcile a POS ticket against the platform.
+            'external_reference' => [
+                'nullable',
+                Rule::requiredIf(fn () => in_array(
+                    $this->input('type'), \App\Models\Channel::THIRD_PARTY_CODES, true,
+                )),
+                'string', 'max:60',
+            ],
+
             'notes' => ['nullable', 'string'],
 
             'items' => ['required', 'array', 'min:1'],
@@ -34,6 +45,7 @@ class StoreOrderRequest extends FormRequest
             'items.required' => 'يجب إضافة صنف واحد على الأقل للطلب',
             'delivery_area_id.required_if' => 'منطقة التوصيل مطلوبة لطلبات التوصيل',
             'table_number.required_if' => 'رقم الطاولة مطلوب لطلبات الصالة',
+            'external_reference.required' => 'رقم الطلب على المنصة مطلوب لطلبات طلباتي/اشيائي',
         ];
     }
 }

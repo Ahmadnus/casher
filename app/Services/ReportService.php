@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Channel;
 use App\Models\Invoice;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -45,6 +46,57 @@ class ReportService
     }
 
     /**
+     * Per-channel totals for an invoice set, one row per channel, including
+     * commission and net revenue. Unlike breakdownByOrderType this always
+     * emits a row for every configured channel (zeros included) so the
+     * dashboard's column layout is stable from day to day.
+     */
+    protected function breakdownByChannel($query): array
+    {
+        $rows = (clone $query)
+            ->selectRaw('order_type')
+            ->selectRaw('COALESCE(SUM(total), 0) as total_sales')
+            ->selectRaw('COALESCE(SUM(subtotal), 0) as subtotal')
+            ->selectRaw('COALESCE(SUM(discount), 0) as discount')
+            ->selectRaw('COALESCE(SUM(delivery_fee), 0) as delivery_fee')
+            ->selectRaw('COALESCE(SUM(commission_amount), 0) as commission')
+            ->selectRaw('COALESCE(SUM(net_total), 0) as net_sales')
+            ->selectRaw('COALESCE(AVG(total), 0) as average_invoice')
+            ->selectRaw('COUNT(*) as invoice_count')
+            ->groupBy('order_type')
+            ->get()
+            ->keyBy('order_type');
+
+        $grandTotal = (float) $rows->sum('total_sales');
+
+        return Channel::ordered()->get()->map(function (Channel $channel) use ($rows, $grandTotal) {
+            $row = $rows->get($channel->code);
+            $totalSales = (float) ($row->total_sales ?? 0);
+
+            return [
+                'channel_code' => $channel->code,
+                'channel_name' => $channel->name,
+                'channel_name_ar' => $channel->name_ar,
+                'is_third_party' => $channel->is_third_party,
+                'is_active' => $channel->is_active,
+                'total_sales' => $totalSales,
+                'subtotal' => (float) ($row->subtotal ?? 0),
+                'discount' => (float) ($row->discount ?? 0),
+                'delivery_fee' => (float) ($row->delivery_fee ?? 0),
+                'commission' => (float) ($row->commission ?? 0),
+                'net_sales' => (float) ($row->net_sales ?? 0),
+                'average_invoice' => round((float) ($row->average_invoice ?? 0), 2),
+                'invoice_count' => (int) ($row->invoice_count ?? 0),
+                // Share of gross sales, so the dashboard can render the split
+                // without recomputing it client-side.
+                'share_percent' => $grandTotal > 0
+                    ? round($totalSales / $grandTotal * 100, 2)
+                    : 0.0,
+            ];
+        })->all();
+    }
+
+    /**
      * Total quantity of items sold across the given invoice set.
      */
     protected function itemsSold($query): int
@@ -73,6 +125,8 @@ class ReportService
             ->selectRaw('COALESCE(SUM(tax), 0) as tax')
             ->selectRaw('COALESCE(SUM(discount), 0) as discount')
             ->selectRaw('COALESCE(SUM(delivery_fee), 0) as delivery_fee')
+            ->selectRaw('COALESCE(SUM(commission_amount), 0) as commission')
+            ->selectRaw('COALESCE(SUM(net_total), 0) as net_sales')
             ->selectRaw('COALESCE(AVG(total), 0) as average_invoice')
             ->first();
 
@@ -83,9 +137,13 @@ class ReportService
             'tax' => (float) $row->tax,
             'discount' => (float) $row->discount,
             'delivery_fee' => (float) $row->delivery_fee,
+            // Gross minus platform commission — the money actually banked.
+            'commission' => (float) $row->commission,
+            'net_sales' => (float) $row->net_sales,
             'average_invoice' => (float) $row->average_invoice,
             'total_items' => $totalItems,
             'by_order_type' => $byOrderType,
+            'by_channel' => $this->breakdownByChannel($query),
         ];
     }
 
@@ -213,6 +271,151 @@ class ReportService
             'items_map' => $rows->mapWithKeys(
                 fn ($r) => [$r->name => (int) $r->total_quantity]
             )->all(),
+        ];
+    }
+
+    /**
+     * THE unified multi-channel dashboard: one row per channel (dine-in,
+     * takeaway, delivery, coffee shop, Talabaty, Eshyai) plus the combined
+     * total, over any date range. This is the single call the summary screen
+     * needs — it does not have to fan out one request per channel.
+     */
+    public function salesByChannel(?string $from = null, ?string $to = null): array
+    {
+        $from = $from ? Carbon::parse($from) : today();
+        $to = $to ? Carbon::parse($to) : $from;
+
+        $query = Invoice::query()
+            ->where('status', 'paid')
+            ->whereDate('created_at', '>=', $from)
+            ->whereDate('created_at', '<=', $to);
+
+        $channels = $this->breakdownByChannel($query);
+
+        $inHouse = array_filter($channels, fn ($c) => ! $c['is_third_party']);
+        $thirdParty = array_filter($channels, fn ($c) => $c['is_third_party']);
+
+        $sum = fn (array $rows, string $key) => round(array_sum(array_column($rows, $key)), 2);
+
+        return [
+            'date_from' => $from->toDateString(),
+            'date_to' => $to->toDateString(),
+            'channels' => $channels,
+
+            // Pre-rolled subtotals: "how much of today came from the shop
+            // itself vs. from the delivery platforms".
+            'in_house' => [
+                'total_sales' => $sum($inHouse, 'total_sales'),
+                'net_sales' => $sum($inHouse, 'net_sales'),
+                'invoice_count' => (int) array_sum(array_column($inHouse, 'invoice_count')),
+            ],
+            'third_party' => [
+                'total_sales' => $sum($thirdParty, 'total_sales'),
+                'commission' => $sum($thirdParty, 'commission'),
+                'net_sales' => $sum($thirdParty, 'net_sales'),
+                'invoice_count' => (int) array_sum(array_column($thirdParty, 'invoice_count')),
+            ],
+            'totals' => [
+                'total_sales' => $sum($channels, 'total_sales'),
+                'commission' => $sum($channels, 'commission'),
+                'net_sales' => $sum($channels, 'net_sales'),
+                'delivery_fee' => $sum($channels, 'delivery_fee'),
+                'discount' => $sum($channels, 'discount'),
+                'invoice_count' => (int) array_sum(array_column($channels, 'invoice_count')),
+            ],
+        ];
+    }
+
+    /**
+     * Day-by-day sales for one channel — powers the per-channel trend chart
+     * and the standalone "Talabaty report" / "Eshyai report" screens.
+     */
+    public function channelTrend(string $channelCode, ?string $from = null, ?string $to = null): array
+    {
+        $from = $from ? Carbon::parse($from) : today()->subDays(29);
+        $to = $to ? Carbon::parse($to) : today();
+
+        $base = Invoice::query()
+            ->where('status', 'paid')
+            ->where('order_type', $channelCode)
+            ->whereDate('created_at', '>=', $from)
+            ->whereDate('created_at', '<=', $to);
+
+        $byDay = (clone $base)
+            ->selectRaw('DATE(created_at) as day')
+            ->selectRaw('COALESCE(SUM(total), 0) as total_sales')
+            ->selectRaw('COALESCE(SUM(commission_amount), 0) as commission')
+            ->selectRaw('COALESCE(SUM(net_total), 0) as net_sales')
+            ->selectRaw('COUNT(*) as invoice_count')
+            ->groupBy('day')
+            ->orderBy('day')
+            ->get()
+            ->map(fn ($r) => [
+                'date' => (string) $r->day,
+                'total_sales' => (float) $r->total_sales,
+                'commission' => (float) $r->commission,
+                'net_sales' => (float) $r->net_sales,
+                'invoice_count' => (int) $r->invoice_count,
+            ])->all();
+
+        $channel = Channel::where('code', $channelCode)->first();
+
+        return [
+            'channel_code' => $channelCode,
+            'channel_name' => $channel?->name,
+            'channel_name_ar' => $channel?->name_ar,
+            'commission_rate' => (float) ($channel->commission_rate ?? 0),
+            'date_from' => $from->toDateString(),
+            'date_to' => $to->toDateString(),
+            'by_day' => $byDay,
+        ] + $this->summarize($base);
+    }
+
+    /**
+     * Items sold, split per channel — "what does Talabaty actually sell?"
+     * Returns one bucket per channel, each with its own item list, so you
+     * can stock and price each platform on its real demand.
+     */
+    public function itemizedByChannel(?string $from = null, ?string $to = null): array
+    {
+        $from = $from ? Carbon::parse($from) : today();
+        $to = $to ? Carbon::parse($to) : $from;
+
+        $rows = DB::table('invoice_items')
+            ->join('invoices', 'invoices.id', '=', 'invoice_items.invoice_id')
+            ->where('invoices.status', 'paid')
+            ->whereNull('invoices.deleted_at')
+            ->whereDate('invoices.created_at', '>=', $from)
+            ->whereDate('invoices.created_at', '<=', $to)
+            ->select('invoices.order_type', 'invoice_items.name')
+            ->selectRaw('SUM(invoice_items.quantity) as total_quantity')
+            ->selectRaw('SUM(invoice_items.total) as total_revenue')
+            ->groupBy('invoices.order_type', 'invoice_items.name')
+            ->orderByDesc('total_quantity')
+            ->get()
+            ->groupBy('order_type');
+
+        $channels = Channel::ordered()->get()->map(function (Channel $channel) use ($rows) {
+            $items = $rows->get($channel->code, collect());
+
+            return [
+                'channel_code' => $channel->code,
+                'channel_name' => $channel->name,
+                'channel_name_ar' => $channel->name_ar,
+                'total_items' => (int) $items->sum('total_quantity'),
+                'total_revenue' => (float) $items->sum('total_revenue'),
+                'items' => $items->map(fn ($r) => [
+                    'name' => $r->name,
+                    'total_quantity' => (int) $r->total_quantity,
+                    'total_revenue' => (float) $r->total_revenue,
+                ])->values()->all(),
+            ];
+        })->all();
+
+        return [
+            'date_from' => $from->toDateString(),
+            'date_to' => $to->toDateString(),
+            'channels' => $channels,
         ];
     }
 

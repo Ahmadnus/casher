@@ -14,12 +14,15 @@ use Illuminate\Validation\ValidationException;
 
 class OrderService
 {
+    public function __construct(protected ChannelService $channels) {}
+
     public function paginate(array $filters = []): LengthAwarePaginator
     {
-        $query = Order::query()->with(['customer', 'employee', 'deliveryArea']);
+        $query = Order::query()->with(['customer', 'employee', 'deliveryArea', 'channel']);
 
         $query->status($filters['status'] ?? null);
         $query->type($filters['type'] ?? null);
+        $query->channel($filters['channel'] ?? null);
 
         if (! empty($filters['employee_id'])) {
             $query->where('employee_id', $filters['employee_id']);
@@ -48,15 +51,20 @@ class OrderService
     public function create(array $data, User $employee): Order
     {
         return DB::transaction(function () use ($data, $employee) {
+            // The order type IS the channel code. Resolving it here rejects
+            // paused channels and gives us the per-channel price overrides.
+            $channel = $this->channels->resolveForWrite($data['type']);
+            $overrides = $this->channels->overridesFor($channel);
+
             $menuItems = MenuItem::whereIn('id', collect($data['items'])->pluck('menu_item_id'))
                 ->get()
                 ->keyBy('id');
 
             foreach ($data['items'] as $line) {
                 $item = $menuItems->get($line['menu_item_id']);
-                if (! $item || ! $item->is_available) {
+                if (! $item || ! $this->channels->isAvailableOn($item, $overrides)) {
                     throw ValidationException::withMessages([
-                        'items' => ["الصنف \"{$item?->name}\" غير متوفر حالياً"],
+                        'items' => ["الصنف \"{$item?->name}\" غير متوفر على هذه القناة"],
                     ]);
                 }
             }
@@ -66,25 +74,32 @@ class OrderService
                 'customer_id' => $data['customer_id'] ?? null,
                 'employee_id' => $employee->id,
                 'delivery_area_id' => $data['delivery_area_id'] ?? null,
-                'type' => $data['type'],
+                'channel_id' => $channel->id,
+                'type' => $channel->code,
                 'status' => 'pending',
                 'table_number' => $data['table_number'] ?? null,
+                'external_reference' => $data['external_reference'] ?? null,
                 'notes' => $data['notes'] ?? null,
             ]);
 
             foreach ($data['items'] as $line) {
                 $item = $menuItems->get($line['menu_item_id']);
+
+                // Snapshot the CHANNEL price, not the base price — a Talabaty
+                // ticket must show what the customer was actually charged.
+                $price = $this->channels->priceFor($item, $overrides);
+
                 $order->items()->create([
                     'menu_item_id' => $item->id,
                     'name' => $item->name,
-                    'price' => $item->price,
+                    'price' => $price,
                     'quantity' => $line['quantity'],
-                    'total' => $item->price * $line['quantity'],
+                    'total' => $price * $line['quantity'],
                     'notes' => $line['notes'] ?? null,
                 ]);
             }
 
-            $order->load(['items', 'customer', 'employee', 'deliveryArea']);
+            $order->load(['items', 'customer', 'employee', 'deliveryArea', 'channel']);
 
             OrderCreated::dispatch($order);
 

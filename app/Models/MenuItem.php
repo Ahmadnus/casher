@@ -85,6 +85,11 @@ class MenuItem extends Model implements HasMedia
         return $this->belongsTo(Category::class);
     }
 
+    public function channelPrices()
+    {
+        return $this->hasMany(ChannelMenuItemPrice::class);
+    }
+
     public function orderItems()
     {
         return $this->hasMany(OrderItem::class);

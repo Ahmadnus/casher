@@ -11,12 +11,19 @@ use Illuminate\Support\Facades\DB;
 
 class DashboardService
 {
+    public function __construct(protected ReportService $reports) {}
+
     public function summary(): array
     {
         $todayInvoices = Invoice::query()->today()->where('status', 'paid');
 
         return [
             'today_sales' => (float) (clone $todayInvoices)->sum('total'),
+            // Net of platform commission — what today actually banked.
+            'today_net_sales' => (float) (clone $todayInvoices)->sum('net_total'),
+            'today_commission' => (float) (clone $todayInvoices)->sum('commission_amount'),
+            // Today's split across every channel, for the home-screen cards.
+            'today_by_channel' => $this->reports->salesByChannel(),
             'today_orders' => Order::query()->today()->count(),
             'today_invoice_count' => (clone $todayInvoices)->count(),
             'revenue_this_month' => (float) Invoice::query()

@@ -1,0 +1,268 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Category;
+use App\Models\Channel;
+use App\Models\ChannelMenuItemPrice;
+use App\Models\Invoice;
+use App\Models\InvoiceItem;
+use App\Models\MenuItem;
+use App\Models\User;
+use App\Services\ChannelService;
+use App\Services\InvoiceService;
+use App\Services\ReportService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Validation\ValidationException;
+use Tests\TestCase;
+
+/**
+ * Multi-channel sales: per-channel pricing, commission snapshotting and the
+ * segregated / unified reporting that sits on top of them.
+ */
+class ChannelSalesTest extends TestCase
+{
+    use RefreshDatabase;
+
+    protected function channel(string $code): Channel
+    {
+        return Channel::where('code', $code)->firstOrFail();
+    }
+
+    public function test_migration_seeds_all_six_channels(): void
+    {
+        $this->assertSame(6, Channel::count());
+
+        foreach (Channel::CODES as $code) {
+            $this->assertDatabaseHas('channels', ['code' => $code]);
+        }
+
+        $this->assertTrue($this->channel('talabaty')->is_third_party);
+        $this->assertTrue($this->channel('eshyai')->is_third_party);
+        $this->assertFalse($this->channel('dine_in')->is_third_party);
+    }
+
+    public function test_invoice_snapshots_commission_for_third_party_channel(): void
+    {
+        $this->channel('talabaty')->update(['commission_rate' => 20]);
+        app(ChannelService::class)->flushCache();
+
+        $invoice = $this->createInvoice('talabaty', 100.0);
+
+        $this->assertSame('20.00', $invoice->commission_rate);
+        $this->assertSame('20.00', $invoice->commission_amount);
+        $this->assertSame('80.00', $invoice->net_total);
+        $this->assertSame($this->channel('talabaty')->id, $invoice->channel_id);
+    }
+
+    public function test_in_house_channel_has_no_commission(): void
+    {
+        $invoice = $this->createInvoice('dine_in', 100.0, ['table_number' => '3']);
+
+        $this->assertSame('0.00', $invoice->commission_amount);
+        $this->assertSame('100.00', $invoice->net_total);
+    }
+
+    /**
+     * Changing a rate must never rewrite revenue that was already booked.
+     */
+    public function test_commission_snapshot_survives_a_later_rate_change(): void
+    {
+        $this->channel('eshyai')->update(['commission_rate' => 10]);
+        app(ChannelService::class)->flushCache();
+
+        $invoice = $this->createInvoice('eshyai', 200.0);
+        $this->assertSame('20.00', $invoice->commission_amount);
+
+        $this->channel('eshyai')->update(['commission_rate' => 50]);
+        app(ChannelService::class)->flushCache();
+
+        $this->assertSame('20.00', $invoice->fresh()->commission_amount);
+        $this->assertSame('180.00', $invoice->fresh()->net_total);
+    }
+
+    public function test_channel_price_override_is_applied_to_invoice_lines(): void
+    {
+        [$item] = $this->menu();
+
+        ChannelMenuItemPrice::create([
+            'channel_id' => $this->channel('talabaty')->id,
+            'menu_item_id' => $item->id,
+            'price' => 15.00,
+        ]);
+
+        $talabaty = app(InvoiceService::class)->create([
+            'order_type' => 'talabaty', 'external_reference' => 'T-1',
+            'payment_method' => 'online', 'paid' => true,
+            'items' => [['menu_item_id' => $item->id, 'quantity' => 2]],
+        ], $this->employee());
+
+        $dineIn = app(InvoiceService::class)->create([
+            'order_type' => 'dine_in', 'table_number' => '1',
+            'payment_method' => 'cash', 'paid' => true,
+            'items' => [['menu_item_id' => $item->id, 'quantity' => 2]],
+        ], $this->employee());
+
+        // Same item, same quantity, different channel → different revenue.
+        $this->assertSame('30.00', $talabaty->total);
+        $this->assertSame('20.00', $dineIn->total);
+    }
+
+    public function test_item_hidden_from_a_channel_cannot_be_sold_on_it(): void
+    {
+        [$item] = $this->menu();
+
+        ChannelMenuItemPrice::create([
+            'channel_id' => $this->channel('talabaty')->id,
+            'menu_item_id' => $item->id,
+            'is_available' => false,
+        ]);
+
+        $menu = app(ChannelService::class)->menuFor($this->channel('talabaty'));
+        $this->assertCount(0, $menu);
+
+        // Still sellable in-store.
+        $this->assertCount(1, app(ChannelService::class)->menuFor($this->channel('dine_in')));
+    }
+
+    public function test_paused_channel_is_rejected(): void
+    {
+        $this->channel('eshyai')->update(['is_active' => false]);
+        app(ChannelService::class)->flushCache();
+
+        $this->expectException(ValidationException::class);
+        $this->createInvoice('eshyai', 10.0);
+    }
+
+    public function test_sales_by_channel_segregates_each_channel(): void
+    {
+        $this->channel('talabaty')->update(['commission_rate' => 25]);
+        app(ChannelService::class)->flushCache();
+
+        $this->createInvoice('dine_in', 40.0, ['table_number' => '2']);
+        $this->createInvoice('talabaty', 100.0);
+        $this->createInvoice('talabaty', 60.0);
+
+        $report = app(ReportService::class)->salesByChannel();
+        $rows = collect($report['channels'])->keyBy('channel_code');
+
+        // Every channel gets a row so the dashboard layout is stable.
+        $this->assertCount(6, $report['channels']);
+
+        $this->assertSame(40.0, $rows['dine_in']['total_sales']);
+        $this->assertSame(1, $rows['dine_in']['invoice_count']);
+        $this->assertSame(0.0, $rows['dine_in']['commission']);
+
+        $this->assertSame(160.0, $rows['talabaty']['total_sales']);
+        $this->assertSame(2, $rows['talabaty']['invoice_count']);
+        $this->assertSame(40.0, $rows['talabaty']['commission']);
+        $this->assertSame(120.0, $rows['talabaty']['net_sales']);
+
+        // Channel with no sales still reports zeros, not a missing key.
+        $this->assertSame(0.0, $rows['eshyai']['total_sales']);
+        $this->assertSame(0, $rows['eshyai']['invoice_count']);
+
+        // Roll-ups.
+        $this->assertSame(200.0, $report['totals']['total_sales']);
+        $this->assertSame(40.0, $report['totals']['commission']);
+        $this->assertSame(160.0, $report['totals']['net_sales']);
+        $this->assertSame(40.0, $report['in_house']['total_sales']);
+        $this->assertSame(160.0, $report['third_party']['total_sales']);
+    }
+
+    public function test_unpaid_invoices_are_excluded_from_channel_reports(): void
+    {
+        Invoice::factory()->unpaid()->create([
+            'order_type' => 'talabaty', 'total' => 999, 'net_total' => 999,
+        ]);
+
+        $report = app(ReportService::class)->salesByChannel();
+        $rows = collect($report['channels'])->keyBy('channel_code');
+
+        $this->assertSame(0.0, $rows['talabaty']['total_sales']);
+        $this->assertSame(0.0, $report['totals']['total_sales']);
+    }
+
+    public function test_itemized_report_is_bucketed_per_channel(): void
+    {
+        $talabaty = Invoice::factory()->create([
+            'order_type' => 'talabaty', 'total' => 30, 'net_total' => 30,
+        ]);
+        $dineIn = Invoice::factory()->create([
+            'order_type' => 'dine_in', 'total' => 20, 'net_total' => 20,
+        ]);
+
+        InvoiceItem::factory()->create([
+            'invoice_id' => $talabaty->id, 'name' => 'Latte', 'quantity' => 3, 'total' => 30,
+        ]);
+        InvoiceItem::factory()->create([
+            'invoice_id' => $dineIn->id, 'name' => 'Latte', 'quantity' => 2, 'total' => 20,
+        ]);
+
+        $report = app(ReportService::class)->itemizedByChannel();
+        $rows = collect($report['channels'])->keyBy('channel_code');
+
+        // The same product, tracked independently per channel.
+        $this->assertSame(3, $rows['talabaty']['total_items']);
+        $this->assertSame(30.0, $rows['talabaty']['total_revenue']);
+        $this->assertSame(2, $rows['dine_in']['total_items']);
+        $this->assertSame(0, $rows['eshyai']['total_items']);
+    }
+
+    public function test_channel_trend_reports_a_single_channel_only(): void
+    {
+        $this->channel('talabaty')->update(['commission_rate' => 10]);
+        app(ChannelService::class)->flushCache();
+
+        $this->createInvoice('talabaty', 50.0);
+        $this->createInvoice('dine_in', 999.0, ['table_number' => '9']);
+
+        $trend = app(ReportService::class)->channelTrend('talabaty');
+
+        $this->assertSame(50.0, $trend['total_sales']);
+        $this->assertSame(1, $trend['invoice_count']);
+        $this->assertSame(10.0, $trend['commission_rate']);
+        $this->assertCount(1, $trend['by_day']);
+    }
+
+    // ── helpers ────────────────────────────────────────────────────
+
+    protected function employee(): User
+    {
+        return User::factory()->create();
+    }
+
+    /** @return array{0: MenuItem} */
+    protected function menu(): array
+    {
+        $category = Category::factory()->create();
+
+        return [MenuItem::factory()->create([
+            'category_id' => $category->id,
+            'price' => 10.00,
+            'is_available' => true,
+        ])];
+    }
+
+    /**
+     * Creates a paid invoice on [$code] whose total is exactly [$amount],
+     * by selling $amount worth of a 1.00 item.
+     */
+    protected function createInvoice(string $code, float $amount, array $extra = []): Invoice
+    {
+        $category = Category::factory()->create();
+        $item = MenuItem::factory()->create([
+            'category_id' => $category->id,
+            'price' => 1.00,
+            'is_available' => true,
+        ]);
+
+        return app(InvoiceService::class)->create(array_merge([
+            'order_type' => $code,
+            'payment_method' => 'cash',
+            'paid' => true,
+            'external_reference' => 'REF-'.uniqid(),
+            'items' => [['menu_item_id' => $item->id, 'quantity' => (int) $amount]],
+        ], $extra), $this->employee());
+    }
+}

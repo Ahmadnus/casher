@@ -64,6 +64,48 @@ class ReportController extends Controller
         ));
     }
 
+    /**
+     * Unified multi-channel summary — sales per channel plus overall totals.
+     */
+    public function salesByChannel(Request $request): JsonResponse
+    {
+        $this->authorize('viewAny', \App\Models\Invoice::class);
+
+        return $this->success($this->reportService->salesByChannel(
+            $request->string('date_from')->value() ?: null,
+            $request->string('date_to')->value() ?: null,
+        ));
+    }
+
+    /**
+     * Standalone report for one channel (e.g. /reports/channel/talabaty).
+     */
+    public function channelTrend(Request $request, string $channel): JsonResponse
+    {
+        $this->authorize('viewAny', \App\Models\Invoice::class);
+
+        abort_unless(in_array($channel, \App\Models\Channel::CODES, true), 404);
+
+        return $this->success($this->reportService->channelTrend(
+            $channel,
+            $request->string('date_from')->value() ?: null,
+            $request->string('date_to')->value() ?: null,
+        ));
+    }
+
+    /**
+     * Items sold broken down per channel.
+     */
+    public function itemizedByChannel(Request $request): JsonResponse
+    {
+        $this->authorize('viewAny', \App\Models\Invoice::class);
+
+        return $this->success($this->reportService->itemizedByChannel(
+            $request->string('date_from')->value() ?: null,
+            $request->string('date_to')->value() ?: null,
+        ));
+    }
+
     public function bestSellingItems(Request $request): JsonResponse
     {
         $this->authorize('viewAny', \App\Models\Invoice::class);
