@@ -266,6 +266,35 @@ class ChannelSalesTest extends TestCase
         $this->assertSame("INV-{$day}-0002", $d2->invoice_number);
     }
 
+    /**
+     * Backs the POS's per-channel invoice list: filtering must query the
+     * whole set server-side, not just narrow the current page.
+     */
+    public function test_invoice_list_can_be_filtered_to_one_channel(): void
+    {
+        $this->createInvoice('talabaty', 10.0);
+        $this->createInvoice('talabaty', 10.0);
+        $this->createInvoice('eshyai', 10.0);
+        $this->createInvoice('dine_in', 10.0, ['table_number' => '4']);
+
+        $service = app(InvoiceService::class);
+
+        $talabaty = $service->paginate(['order_type' => 'talabaty']);
+        $this->assertSame(2, $talabaty->total());
+        foreach ($talabaty->items() as $invoice) {
+            $this->assertSame('talabaty', $invoice->order_type);
+        }
+
+        $eshyai = $service->paginate(['order_type' => 'eshyai']);
+        $this->assertSame(1, $eshyai->total());
+
+        // The "channel" alias filters the same column.
+        $this->assertSame(2, $service->paginate(['channel' => 'talabaty'])->total());
+
+        // No filter still returns everything.
+        $this->assertSame(4, $service->paginate([])->total());
+    }
+
     // ── helpers ────────────────────────────────────────────────────
 
     protected function employee(): User
