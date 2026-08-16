@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Models\User;
 use App\Policies\EmployeePolicy;
+use App\Services\ChannelService;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
@@ -13,7 +14,13 @@ use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
 {
-    public function register(): void {}
+    public function register(): void
+    {
+        // One instance per request, so the channel memo is shared by
+        // OrderService/InvoiceService/ChannelController — and a flushCache()
+        // after an admin edit is visible to all of them immediately.
+        $this->app->singleton(ChannelService::class);
+    }
 
     public function boot(): void
     {

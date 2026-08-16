@@ -225,6 +225,47 @@ class ChannelSalesTest extends TestCase
         $this->assertCount(1, $trend['by_day']);
     }
 
+    /**
+     * Regression: channels used to be held in the cache store, which meant
+     * serializing Eloquent models. A blob unserialized while the class was
+     * unresolvable came back as __PHP_Incomplete_Class and broke every
+     * request after the first. Resolving repeatedly must stay type-safe.
+     */
+    public function test_repeated_channel_lookups_return_real_models(): void
+    {
+        $service = app(ChannelService::class);
+
+        for ($i = 0; $i < 3; $i++) {
+            $this->assertInstanceOf(\Illuminate\Support\Collection::class, $service->all());
+            $this->assertInstanceOf(Channel::class, $service->resolveForWrite('talabaty'));
+        }
+
+        // A rate change is visible immediately after the memo is flushed.
+        $this->channel('talabaty')->update(['commission_rate' => 33]);
+        $service->flushCache();
+        $this->assertSame('33.00', $service->resolveForWrite('talabaty')->commission_rate);
+    }
+
+    public function test_third_party_channels_number_invoices_independently(): void
+    {
+        $day = now()->format('Ymd');
+
+        $t1 = $this->createInvoice('talabaty', 10.0);
+        $t2 = $this->createInvoice('talabaty', 10.0);
+        $e1 = $this->createInvoice('eshyai', 10.0);
+        $d1 = $this->createInvoice('dine_in', 10.0, ['table_number' => '1']);
+        $d2 = $this->createInvoice('takeaway', 10.0);
+
+        // Each platform runs its own sequence from 0001.
+        $this->assertSame("TLB-{$day}-0001", $t1->invoice_number);
+        $this->assertSame("TLB-{$day}-0002", $t2->invoice_number);
+        $this->assertSame("ESH-{$day}-0001", $e1->invoice_number);
+
+        // In-house channels keep sharing the original INV counter.
+        $this->assertSame("INV-{$day}-0001", $d1->invoice_number);
+        $this->assertSame("INV-{$day}-0002", $d2->invoice_number);
+    }
+
     // ── helpers ────────────────────────────────────────────────────
 
     protected function employee(): User

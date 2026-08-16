@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
  * @property string $code
  * @property string $name
  * @property string|null $name_ar
+ * @property string $invoice_prefix
  * @property float $commission_rate
  * @property bool $is_third_party
  * @property bool $is_active
@@ -49,7 +50,7 @@ class Channel extends Model
     public const THIRD_PARTY_CODES = [self::TALABATY, self::ESHYAI];
 
     protected $fillable = [
-        'code', 'name', 'name_ar', 'commission_rate',
+        'code', 'name', 'name_ar', 'invoice_prefix', 'commission_rate',
         'is_third_party', 'is_active', 'sort_order',
     ];
 

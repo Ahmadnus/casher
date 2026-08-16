@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Channel;
 use App\Models\Customer;
 use App\Models\Invoice;
 use App\Models\MenuItem;
@@ -163,7 +164,7 @@ class InvoiceService
             $isPaid = (bool) ($data['paid'] ?? false);
 
             $invoice = Invoice::create([
-                'invoice_number' => $this->generateInvoiceNumber(),
+                'invoice_number' => $this->generateInvoiceNumber($channel),
                 'idempotency_key' => $idempotencyKey,
                 'order_id' => $order?->id,
                 'customer_id' => $this->resolveCustomerId($data),
@@ -294,13 +295,31 @@ class InvoiceService
         $invoice->delete();
     }
 
-    protected function generateInvoiceNumber(): string
+    /**
+     * Invoice number on the channel's own daily sequence.
+     *
+     * Talabaty and Eshyai carry their own prefixes (TLB-/ESH-), so each
+     * platform numbers independently from 0001 each day and its invoices can
+     * be reconciled against that platform in isolation. The in-house channels
+     * all share the INV prefix, keeping the original single counter — and
+     * every historical invoice number — intact.
+     *
+     * Counting by prefix rather than by channel_id is what makes those four
+     * share one sequence while the platforms stay separate.
+     */
+    protected function generateInvoiceNumber(Channel $channel): string
     {
-        $prefix = 'INV-'.now()->format('Ymd').'-';
-        $todayCount = Invoice::whereDate('created_at', today())->count() + 1;
+        $prefix = ($channel->invoice_prefix ?: 'INV').'-'.now()->format('Ymd').'-';
+
+        $todayCount = Invoice::where('invoice_number', 'like', $prefix.'%')
+            ->whereDate('created_at', today())
+            ->count() + 1;
 
         $number = $prefix.str_pad((string) $todayCount, 4, '0', STR_PAD_LEFT);
 
+        // Two tills checking out in the same instant would both compute the
+        // same count; fall back to a random suffix rather than collide on the
+        // unique index.
         while (Invoice::where('invoice_number', $number)->exists()) {
             $number = $prefix.strtoupper(Str::random(4));
         }

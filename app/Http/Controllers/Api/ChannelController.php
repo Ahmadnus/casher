@@ -36,6 +36,8 @@ class ChannelController extends Controller
         $data = $request->validate([
             'name' => ['sometimes', 'string', 'max:255'],
             'name_ar' => ['sometimes', 'nullable', 'string', 'max:255'],
+            // Uppercase letters only — it becomes part of the invoice number.
+            'invoice_prefix' => ['sometimes', 'string', 'max:8', 'regex:/^[A-Z]+$/'],
             'commission_rate' => ['sometimes', 'numeric', 'min:0', 'max:100'],
             'is_active' => ['sometimes', 'boolean'],
             'sort_order' => ['sometimes', 'integer', 'min:0'],

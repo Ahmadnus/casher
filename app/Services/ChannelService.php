@@ -6,7 +6,6 @@ use App\Models\Channel;
 use App\Models\ChannelMenuItemPrice;
 use App\Models\MenuItem;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -17,26 +16,29 @@ use Illuminate\Validation\ValidationException;
  */
 class ChannelService
 {
-    protected const CACHE_KEY = 'channels.by_code';
-
-    protected const CACHE_TTL = 3600;
-
     /**
-     * All channels keyed by code. Cached because every single order write
-     * needs it and the table changes maybe twice a year.
+     * Channels keyed by code, memoized for the lifetime of this instance.
+     *
+     * Deliberately NOT put in the cache store. Eloquent models have to be
+     * serialized to live there, and a cached blob that is unserialized while
+     * the class is not resolvable comes back as __PHP_Incomplete_Class — which
+     * fails this method's return type on every request after the first. The
+     * table holds six rows behind a primary key, so re-reading it per request
+     * costs nothing and cannot go stale.
      */
+    protected ?Collection $channels = null;
+
     public function all(): Collection
     {
-        return Cache::remember(
-            self::CACHE_KEY,
-            self::CACHE_TTL,
-            fn () => Channel::ordered()->get()->keyBy('code'),
-        );
+        return $this->channels ??= Channel::ordered()->get()->keyBy('code');
     }
 
+    /**
+     * Drop the memo so the next read reflects a just-written change.
+     */
     public function flushCache(): void
     {
-        Cache::forget(self::CACHE_KEY);
+        $this->channels = null;
     }
 
     public function activeChannels(): Collection
