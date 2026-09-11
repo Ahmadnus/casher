@@ -33,6 +33,11 @@ class Channel extends Model
 
     public const ESHYAI = 'eshyai';
 
+    public const OTLOB = 'otlob';
+
+    /** Catch-all source for orders that fit none of the named channels. */
+    public const OTHER = 'other';
+
     /**
      * Every valid channel code. Mirrors the orders.type / invoices.order_type
      * enum — the DB enum and this list must be changed together.
@@ -44,10 +49,12 @@ class Channel extends Model
         self::COFFEE_SHOP,
         self::TALABATY,
         self::ESHYAI,
+        self::OTLOB,
+        self::OTHER,
     ];
 
     /** Third-party aggregators: no table, external reference, commission. */
-    public const THIRD_PARTY_CODES = [self::TALABATY, self::ESHYAI];
+    public const THIRD_PARTY_CODES = [self::TALABATY, self::ESHYAI, self::OTLOB];
 
     protected $fillable = [
         'code', 'name', 'name_ar', 'invoice_prefix', 'commission_rate',

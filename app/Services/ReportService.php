@@ -237,18 +237,17 @@ class ReportService
      * restricted to one order type. Returns both a detailed list and
      * a simple {"Burger": 20} map keyed by item name.
      */
-    public function itemizedSales(?string $from = null, ?string $to = null, ?string $orderType = null): array
-    {
+    public function itemizedSales(
+        ?string $from = null,
+        ?string $to = null,
+        ?string $orderType = null,
+        ?int $productId = null,
+        ?int $categoryId = null,
+    ): array {
         $from = $from ? Carbon::parse($from) : today();
         $to = $to ? Carbon::parse($to) : $from;
 
-        $rows = DB::table('invoice_items')
-            ->join('invoices', 'invoices.id', '=', 'invoice_items.invoice_id')
-            ->where('invoices.status', 'paid')
-            ->whereNull('invoices.deleted_at')
-            ->whereDate('invoices.created_at', '>=', $from)
-            ->whereDate('invoices.created_at', '<=', $to)
-            ->when(! empty($orderType), fn ($q) => $q->where('invoices.order_type', $orderType))
+        $rows = $this->paidItemsQuery($from, $to, $orderType, $productId, $categoryId)
             // Group by the item snapshot name: invoice_items stores the name
             // at sale time, so renamed/deleted menu items still report
             // correctly for the day they were sold.
@@ -271,6 +270,133 @@ class ReportService
             'items_map' => $rows->mapWithKeys(
                 fn ($r) => [$r->name => (int) $r->total_quantity]
             )->all(),
+        ];
+    }
+
+    /**
+     * Base query for every "items sold" report: paid, non-deleted invoices in
+     * an inclusive date range, joined to their line items. Optional filters
+     * narrow to one sales channel, one product, or one category.
+     *
+     * Category is resolved through menu_items (left join) so lines whose
+     * menu item was since deleted still count when no category filter is set.
+     */
+    protected function paidItemsQuery(
+        Carbon $from,
+        Carbon $to,
+        ?string $orderType = null,
+        ?int $productId = null,
+        ?int $categoryId = null,
+    ) {
+        return DB::table('invoice_items')
+            ->join('invoices', 'invoices.id', '=', 'invoice_items.invoice_id')
+            ->leftJoin('menu_items', 'menu_items.id', '=', 'invoice_items.menu_item_id')
+            ->where('invoices.status', 'paid')
+            ->whereNull('invoices.deleted_at')
+            ->whereDate('invoices.created_at', '>=', $from)
+            ->whereDate('invoices.created_at', '<=', $to)
+            ->when(! empty($orderType), fn ($q) => $q->where('invoices.order_type', $orderType))
+            ->when($productId, fn ($q) => $q->where('invoice_items.menu_item_id', $productId))
+            ->when($categoryId, fn ($q) => $q->where('menu_items.category_id', $categoryId));
+    }
+
+    /**
+     * Weekly stock-taking pivot: one row per product, one column per sales
+     * channel (order source), quantities and revenue aggregated in SQL from
+     * invoice_items of PAID invoices — the same rule every other revenue
+     * report uses, so the per-channel columns always sum to the same totals
+     * the sales reports show.
+     *
+     *   Product | coffee_shop | talabaty | otlob | other | … | total
+     *
+     * Filters: date range (inclusive), order_type (one channel), product_id,
+     * category_id. With order_type set only that channel's column is
+     * returned, and total equals that column.
+     */
+    public function productSalesByChannel(
+        ?string $from = null,
+        ?string $to = null,
+        ?string $orderType = null,
+        ?int $productId = null,
+        ?int $categoryId = null,
+    ): array {
+        $from = $from ? Carbon::parse($from) : today();
+        $to = $to ? Carbon::parse($to) : $from;
+
+        $rows = $this->paidItemsQuery($from, $to, $orderType, $productId, $categoryId)
+            ->select('invoices.order_type', 'invoice_items.menu_item_id', 'invoice_items.name')
+            ->selectRaw('MAX(menu_items.category_id) as category_id')
+            ->selectRaw('SUM(invoice_items.quantity) as quantity')
+            ->selectRaw('SUM(invoice_items.total) as revenue')
+            ->groupBy('invoices.order_type', 'invoice_items.menu_item_id', 'invoice_items.name')
+            ->get();
+
+        $channels = Channel::ordered()->get()
+            ->when(! empty($orderType), fn ($c) => $c->where('code', $orderType))
+            ->values();
+        $codes = $channels->pluck('code')->all();
+        $zeroQty = array_fill_keys($codes, 0);
+        $zeroRev = array_fill_keys($codes, 0.0);
+
+        // Pivot in PHP: the SQL result is at most (products × channels) rows,
+        // never one row per invoice item. Lines are keyed by menu_item_id so a
+        // renamed product stays one row (latest snapshot name wins); lines
+        // whose menu item was deleted fall back to their snapshot name.
+        $products = [];
+        foreach ($rows as $r) {
+            $key = $r->menu_item_id !== null ? 'id:'.$r->menu_item_id : 'name:'.$r->name;
+
+            if (! isset($products[$key])) {
+                $products[$key] = [
+                    'menu_item_id' => $r->menu_item_id !== null ? (int) $r->menu_item_id : null,
+                    'name' => $r->name,
+                    'category_id' => $r->category_id !== null ? (int) $r->category_id : null,
+                    'quantities' => $zeroQty,
+                    'revenue' => $zeroRev,
+                    'total_quantity' => 0,
+                    'total_revenue' => 0.0,
+                ];
+            }
+
+            $p = &$products[$key];
+            $p['name'] = $r->name;
+            if (array_key_exists($r->order_type, $p['quantities'])) {
+                $p['quantities'][$r->order_type] += (int) $r->quantity;
+                $p['revenue'][$r->order_type] = round($p['revenue'][$r->order_type] + (float) $r->revenue, 2);
+            }
+            $p['total_quantity'] += (int) $r->quantity;
+            $p['total_revenue'] = round($p['total_revenue'] + (float) $r->revenue, 2);
+            unset($p);
+        }
+
+        $products = collect($products)->sortByDesc('total_quantity')->values()->all();
+
+        $channelTotals = $channels->map(function (Channel $channel) use ($products) {
+            $qty = array_sum(array_column(array_column($products, 'quantities'), $channel->code));
+            $rev = array_sum(array_column(array_column($products, 'revenue'), $channel->code));
+
+            return [
+                'channel_code' => $channel->code,
+                'channel_name' => $channel->name,
+                'channel_name_ar' => $channel->name_ar,
+                'is_third_party' => $channel->is_third_party,
+                'total_quantity' => (int) $qty,
+                'total_revenue' => round((float) $rev, 2),
+            ];
+        })->values()->all();
+
+        return [
+            'date_from' => $from->toDateString(),
+            'date_to' => $to->toDateString(),
+            'filters' => [
+                'order_type' => $orderType ?: null,
+                'product_id' => $productId,
+                'category_id' => $categoryId,
+            ],
+            'channels' => $channelTotals,
+            'products' => $products,
+            'total_quantity' => (int) array_sum(array_column($products, 'total_quantity')),
+            'total_revenue' => round((float) array_sum(array_column($products, 'total_revenue')), 2),
         ];
     }
 

@@ -19,6 +19,13 @@ class OrderResource extends JsonResource
             'employee' => new UserResource($this->whenLoaded('employee')),
             'delivery_area' => new DeliveryAreaResource($this->whenLoaded('deliveryArea')),
             'type' => $this->type,
+            'external_reference' => $this->external_reference,
+            'channel' => $this->whenLoaded('channel', fn () => [
+                'code' => $this->channel->code,
+                'name' => $this->channel->name,
+                'name_ar' => $this->channel->name_ar,
+                'is_third_party' => (bool) $this->channel->is_third_party,
+            ]),
             'status' => $this->status,
             'table_number' => $this->table_number,
             'notes' => $this->notes,

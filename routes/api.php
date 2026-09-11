@@ -129,6 +129,9 @@ Route::middleware(['auth.token', 'active'])->group(function () {
         Route::get('sales-by-channel', [ReportController::class, 'salesByChannel']);
         // Items sold, bucketed per channel.
         Route::get('itemized-by-channel', [ReportController::class, 'itemizedByChannel']);
+        // Product × channel pivot (weekly inventory): filters date_from,
+        // date_to, order_type, product_id, category_id.
+        Route::get('product-sales-by-channel', [ReportController::class, 'productSalesByChannel']);
         // Standalone per-channel report, e.g. reports/channel/talabaty.
         Route::get('channel/{channel}', [ReportController::class, 'channelTrend']);
     });

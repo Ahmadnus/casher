@@ -153,3 +153,68 @@ Release signing (one time, if not already done):
 - **Security:** fixed self-service privilege escalation; invoice payment state machine (no double-pay / no reviving refunded); CORS locked down; rate limits confirmed.
 - **Cross-cutting:** disposed leaked dialog controllers; idempotency-key guard against duplicate invoices.
 - **Tests:** 0 → 24 backend tests (reports, security, category integrity, customer linking, idempotency).
+
+---
+
+# Web POS + Order Sources release (2026-09-10)
+
+## A. Backend (`casher`)
+
+Upload the changed files, then on the server:
+
+```bash
+php artisan down
+php artisan migrate --force     # adds otlob/other channels, extends the order_type enum
+php artisan optimize:clear && php artisan config:cache && php artisan route:cache
+php artisan up
+```
+
+Changed/added files:
+- `database/migrations/2026_09_10_000001_add_otlob_and_other_channels.php`
+- `app/Models/Channel.php` (OTLOB / OTHER codes)
+- `app/Services/ReportService.php` (product × source pivot, product/category filters)
+- `app/Http/Controllers/Api/ReportController.php`, `routes/api.php` (`GET /reports/product-sales-by-channel`)
+- `app/Http/Resources/InvoiceResource.php`, `OrderResource.php` (+ `channel`, `external_reference`, commission fields)
+- `app/Http/Controllers/Api/InvoiceController.php`, `OrderController.php` (eager-load channel)
+- `config/cors.php` (+ `CORS_ALLOWED_ORIGINS` env), `.env.example`
+- `tests/Feature/OrderSourceReportTest.php`, `ChannelSalesTest.php`
+- `tools/print-agent/` (Windows print agent source + `build.bat`)
+
+Verify:
+- [ ] `GET /api/channels` lists 8 channels incl. `otlob` and `other`; `talabaty` is named "Talabat".
+- [ ] `GET /api/reports/product-sales-by-channel?date_from=…&date_to=…` returns `products[].quantities.{coffee_shop,talabaty,otlob,other,…}`.
+
+## B. Flutter Web build (`untitled2`)
+
+Serve the web build from the **same domain** as the API so no CORS is needed:
+
+```powershell
+cd untitled2
+flutter build web --release --base-href /pos/
+```
+
+Upload the contents of `build/web/` to `casher/public/pos/` on the server.
+The POS is then at `https://casher.jiljam.com/pos/`.
+
+If you host it on a different domain instead, set on the server
+`CORS_ALLOWED_ORIGINS=https://that-domain` and re-run `php artisan config:cache`.
+
+- [ ] Open the URL in Chrome/Edge/Firefox, log in, create an order, confirm payment, open Reports.
+- [ ] Browser requirement: any browser from ~2021 on (Chrome 90+, Edge 90+, Firefox 90+). Windows 7 can run Chrome 109.
+
+## C. Printing from the web POS (each cashier PC)
+
+1. Copy `tools/print-agent/CasherPrintAgent.exe` to the PC and run it (tray icon). Tick **Start with Windows**.
+2. In the web POS → إعدادات الطابعات: the top card must show the agent as connected.
+3. Assign **طابعة الفاتورة** and **طابعة الكاش** from the list and test-print both.
+4. Fallback only: **طباعة عبر المتصفح** on the invoice screen uses the browser print dialog.
+
+See `tools/print-agent/README.md` for requirements (Win 7 SP1+, .NET 4.x) and the `--port/--token` options.
+
+## D. Order sources — functional check
+
+- [ ] Cashier: order-source grid shows كوفي شوب / طلبات / أطلب / أخرى (plus استلام / توصيل / طاولة / اشيائي).
+- [ ] Create one paid order on each of the four sources; each shows its source in the invoice list and `order_type` in the API.
+- [ ] Reports → "الإيرادات حسب مصدر الطلب": the per-source revenues add up to إجمالي المبيعات.
+- [ ] Reports → "مبيعات الأصناف حسب المصدر": per-source quantities add up to the الإجمالي column; category dropdown and product search filter the table.
+- [ ] Selecting a source chip (e.g. طلبات) restricts every figure on the page to that source.

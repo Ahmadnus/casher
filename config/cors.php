@@ -14,7 +14,13 @@
 return [
     'paths' => ['api/*'],
     'allowed_methods' => ['*'],
-    'allowed_origins' => [],
+    // Flutter Web build origins. Serving the web build from this same domain
+    // (public/pos) needs nothing here; list other origins via
+    // CORS_ALLOWED_ORIGINS=https://pos.example.com,https://other.example.com
+    'allowed_origins' => array_values(array_filter(array_map(
+        'trim',
+        explode(',', (string) env('CORS_ALLOWED_ORIGINS', '')),
+    ))),
     'allowed_origins_patterns' => [],
     'allowed_headers' => ['*'],
     'exposed_headers' => [],

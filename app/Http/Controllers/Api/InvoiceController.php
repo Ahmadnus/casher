@@ -52,7 +52,7 @@ class InvoiceController extends Controller
         $this->authorize('view', $invoice);
 
         return $this->success(new InvoiceResource(
-            $invoice->load(['items', 'customer', 'employee', 'deliveryArea'])
+            $invoice->load(['items', 'customer', 'employee', 'deliveryArea', 'channel'])
         ));
     }
 
@@ -102,7 +102,7 @@ class InvoiceController extends Controller
     {
         $this->authorize('print', $invoice);
 
-        $invoice->load(['items', 'customer', 'employee', 'deliveryArea']);
+        $invoice->load(['items', 'customer', 'employee', 'deliveryArea', 'channel']);
 
         return $this->success([
             'restaurant' => new RestaurantSettingResource($this->settingsService->current()),
