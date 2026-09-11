@@ -61,6 +61,31 @@ class ReportController extends Controller
             $request->string('date_from')->value() ?: null,
             $request->string('date_to')->value() ?: null,
             $request->string('order_type')->value() ?: null,
+            $request->integer('product_id') ?: null,
+            $request->integer('category_id') ?: null,
+        ));
+    }
+
+    /**
+     * Product × order-source pivot for weekly stock-taking: units and revenue
+     * of every product, split per channel, aggregated in SQL.
+     * Params: date_from, date_to, order_type, product_id, category_id.
+     */
+    public function productSalesByChannel(Request $request): JsonResponse
+    {
+        $this->authorize('viewAny', \App\Models\Invoice::class);
+
+        $orderType = $request->string('order_type')->value() ?: null;
+        if ($orderType !== null) {
+            abort_unless(in_array($orderType, \App\Models\Channel::CODES, true), 422, 'قناة البيع غير معروفة');
+        }
+
+        return $this->success($this->reportService->productSalesByChannel(
+            $request->string('date_from')->value() ?: null,
+            $request->string('date_to')->value() ?: null,
+            $orderType,
+            $request->integer('product_id') ?: null,
+            $request->integer('category_id') ?: null,
         ));
     }
 

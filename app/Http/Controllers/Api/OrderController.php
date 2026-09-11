@@ -47,7 +47,7 @@ class OrderController extends Controller
         $this->authorize('view', $order);
 
         return $this->success(new OrderResource(
-            $order->load(['items', 'customer', 'employee', 'deliveryArea', 'invoice'])
+            $order->load(['items', 'customer', 'employee', 'deliveryArea', 'invoice', 'channel'])
         ));
     }
 

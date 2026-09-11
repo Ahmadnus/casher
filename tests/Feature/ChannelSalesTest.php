@@ -29,9 +29,9 @@ class ChannelSalesTest extends TestCase
         return Channel::where('code', $code)->firstOrFail();
     }
 
-    public function test_migration_seeds_all_six_channels(): void
+    public function test_migration_seeds_all_channels(): void
     {
-        $this->assertSame(6, Channel::count());
+        $this->assertSame(8, Channel::count());
 
         foreach (Channel::CODES as $code) {
             $this->assertDatabaseHas('channels', ['code' => $code]);
@@ -147,7 +147,7 @@ class ChannelSalesTest extends TestCase
         $rows = collect($report['channels'])->keyBy('channel_code');
 
         // Every channel gets a row so the dashboard layout is stable.
-        $this->assertCount(6, $report['channels']);
+        $this->assertCount(8, $report['channels']);
 
         $this->assertSame(40.0, $rows['dine_in']['total_sales']);
         $this->assertSame(1, $rows['dine_in']['invoice_count']);
